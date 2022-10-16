@@ -1,2 +1,2 @@
-# Supreme CEFormer
+# Convolutional Efficient Transformer
 
