@@ -1,4 +1,5 @@
 import math
+import random
 from typing import Optional
 import torch
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -19,7 +20,7 @@ class LitCEFormer(pl.LightningModule):
             self,
             # model parameters
             img_height: int = 224, img_width: int = 224, img_channel: int = 3,
-            output_dim: int = 1000,
+            nun_classes: int = 1000,
             embed_dim: int = 128, hidden_dim: int = 384,
             num_layers: int = 12, num_heads=8,
             activation='gelu', softmax=True,
@@ -35,8 +36,8 @@ class LitCEFormer(pl.LightningModule):
         super().__init__(**kwargs)
         self.save_hyperparameters()
         self.network = ConvolutionalEfficientTransformer(
-            img_height, img_width, img_channel, output_dim, softmax, embed_dim, hidden_dim,
-            num_heads, num_heads, activation, dropout, prune_rate
+            img_height, img_width, img_channel, nun_classes, softmax, embed_dim, hidden_dim,
+            num_layers, num_heads, activation, dropout, prune_rate
         )
         self.loss = nn.CrossEntropyLoss()
         self.train_acc = torchmetrics.Accuracy(top_k=1)
@@ -50,6 +51,12 @@ class LitCEFormer(pl.LightningModule):
     def _calculate_loss(self, batch, batch_idx, mode):
         x, y = batch
         y_hat = self.forward(x)
+        if batch_idx % 10 == 0:
+            print("")
+            print(f"y hat = {y_hat[0]}")
+            print(f"y     = {y[0]}")
+            print(f"y hot = {torch.nn.functional.one_hot(y[0], num_classes=10)}")
+            print(f"acc   = {(torch.argmax(y_hat, dim=-1) == y).sum() / y.shape[0]}")
         loss = self.loss(y_hat, y)
 
         if mode == 'train':
