@@ -20,6 +20,7 @@ class LitCEFormer(pl.LightningModule):
             self,
             # model parameters
             img_height: int = 224, img_width: int = 224, img_channel: int = 3,
+            img_dims: tuple = None,
             nun_classes: int = 1000,
             embed_dim: int = 128, hidden_dim: int = 384,
             num_layers: int = 12, num_heads=8,
@@ -34,6 +35,8 @@ class LitCEFormer(pl.LightningModule):
             max_epochs: int = 300,
             **kwargs):
         super().__init__(**kwargs)
+        if img_dims is not None:
+            img_channel, img_height, img_width = img_dims
         self.save_hyperparameters()
         self.network = ConvolutionalEfficientTransformer(
             img_height, img_width, img_channel, nun_classes, softmax, embed_dim, hidden_dim,
@@ -41,9 +44,7 @@ class LitCEFormer(pl.LightningModule):
         )
         self.loss = nn.CrossEntropyLoss()
         self.train_acc = torchmetrics.Accuracy(top_k=1)
-        self.valid_acc = torchmetrics.Accuracy(top_k=5)
-
-        self.scheduler = None
+        self.valid_acc = torchmetrics.Accuracy(top_k=1)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.network(images)
@@ -51,20 +52,14 @@ class LitCEFormer(pl.LightningModule):
     def _calculate_loss(self, batch, batch_idx, mode):
         x, y = batch
         y_hat = self.forward(x)
-        if batch_idx % 10 == 0:
-            print("")
-            print(f"y hat = {y_hat[0]}")
-            print(f"y     = {y[0]}")
-            print(f"y hot = {torch.nn.functional.one_hot(y[0], num_classes=10)}")
-            print(f"acc   = {(torch.argmax(y_hat, dim=-1) == y).sum() / y.shape[0]}")
         loss = self.loss(y_hat, y)
 
         if mode == 'train':
             self.train_acc(y_hat, y)
-            self.log('train_acc', self.train_acc, on_step=True, on_epoch=False)
+            self.log('train_acc', self.train_acc, on_step=True, on_epoch=False, prog_bar=True)
         elif mode == 'valid':
             self.valid_acc(y_hat, y)
-            self.log('valid_acc', self.valid_acc, on_step=True, on_epoch=False)
+            self.log('valid_acc', self.valid_acc, on_step=True, on_epoch=False, prog_bar=True)
         self.log(f'{mode}_loss', loss)
         return loss
 
@@ -86,16 +81,10 @@ class LitCEFormer(pl.LightningModule):
 
         def warm_up_with_cosine_lr(epoch):
             if epoch < self.hparams.warmup_epochs:
-                return (epoch+1) / self.hparams.warmup_epochs
+                return (epoch + 1) / self.hparams.warmup_epochs
             else:
                 return 0.5 * (math.cos((epoch - self.hparams.warmup_epochs) /
                                        (self.hparams.max_epochs - self.hparams.warmup_epochs) * math.pi) + 1)
 
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warm_up_with_cosine_lr)
-
-        # self.scheduler = scheduler
-        return [optimizer], [scheduler]
-
-    # def optimizer_step(self, *args, **kwargs):
-    #     super().optimizer_step(*args, **kwargs)
-    #     self.scheduler.step()  # Step per iteration
+        lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warm_up_with_cosine_lr)
+        return [optimizer], [lr_scheduler]

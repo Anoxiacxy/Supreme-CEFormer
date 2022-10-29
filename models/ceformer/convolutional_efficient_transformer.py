@@ -7,11 +7,11 @@ from .layers import ThinConvModule
 
 class EncoderLayer(nn.Module):
     def __init__(self, embed_dim, hidden_dim, num_heads,
-                 patch_shape, sample_number, activation, dropout, **kwargs):
+                 patch_shape, prune_rate, activation, dropout, **kwargs):
         super(EncoderLayer, self).__init__()
         self.attention = EfficientAttention(
             embed_dim, num_heads,
-            sample_number=sample_number,
+            prune_rate=prune_rate,
             patch_shape=patch_shape,
             dropout=dropout, **kwargs)
         # self.attention = nn.Identity()
@@ -47,7 +47,6 @@ class ConvolutionalEfficientTransformer(nn.Module):
         example_embed = self.thin_conv(example_input)
         self.patch_shape = example_embed.shape[-3:-1]
         print(f"patch shape = {self.patch_shape}")
-        self.sample_number = int(self.patch_shape[0] * self.patch_shape[1] * prune_rate)
 
         self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.randn(1, 1 + self.patch_shape[0] * self.patch_shape[1], embed_dim))
@@ -55,7 +54,7 @@ class ConvolutionalEfficientTransformer(nn.Module):
 
         self.encoder_layers = nn.ModuleList([
             EncoderLayer(
-                embed_dim, hidden_dim, num_heads, self.patch_shape, self.sample_number, activation, dropout
+                embed_dim, hidden_dim, num_heads, self.patch_shape, prune_rate, activation, dropout
             ) for _ in range(num_layers)
         ])
 

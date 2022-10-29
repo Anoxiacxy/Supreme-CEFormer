@@ -109,7 +109,7 @@ class LinearAttention(nn.Module):
         :param q: [..., SeqLen, KDim]
         :param k: [..., SeqLen, KDim]
         :param v: [..., SeqLen, VDim]
-        :param index: [..., SeqLen]
+        :param index: [..., SeqLen] bool
         :return: [..., NewSeqLen,
         """
         k_cos = self.cos_emb_g(self.non_neg_f(k)).transpose(-1, -2)
@@ -152,7 +152,7 @@ class EfficientAttention(nn.Module):
     """
 
     def __init__(self, embed_dim, num_heads, patch_shape, k_head_dim=None, v_head_dim=None,
-                 dropout=0.1, sample_strategy='distribution_sample', sample_number=384, **kwargs) -> None:
+                 dropout=0.1, sample_strategy='distribution_sample', prune_rate=0.7, **kwargs) -> None:
         super(EfficientAttention, self).__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -174,8 +174,8 @@ class EfficientAttention(nn.Module):
         self.linear_attention = LinearAttention(self.seq_length)
         self.dropout = nn.Dropout(dropout)
         self.sampler = TokenSampler(
-            total_number=None,
-            sample_number=sample_number,
+            total_number=self.seq_length,
+            sample_number=int(self.seq_length * prune_rate),
             strategy=sample_strategy)
 
         self._reset_parameters()
