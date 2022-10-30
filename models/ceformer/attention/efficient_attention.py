@@ -88,6 +88,7 @@ class DistributionSample(nn.Module):
         """
         a = torch.matmul(q[..., :1, :], k[..., 1:, :].transpose(-2, -1))
         a = a / math.sqrt(q.size()[-1])
+        # print(a)
         a = nn.functional.softmax(a, dim=-1)[..., 0, :]
         with torch.no_grad():
             index = torch.multinomial(a, num_samples=self.r, replacement=self.replacement)
@@ -98,11 +99,12 @@ class DistributionSample(nn.Module):
 
 
 class LinearAttention(nn.Module):
-    def __init__(self, n):
+    def __init__(self, n, temperature):
         super(LinearAttention, self).__init__()
         self.non_neg_f = NonNegativeF()
         self.cos_emb_g = CosEmbedG(n)
         self.sin_emb_g = SinEmbedG(n)
+        self.temperature = temperature
 
     def forward(self, q, k, v, index=None):
         """
@@ -124,7 +126,7 @@ class LinearAttention(nn.Module):
         k_sin_v = torch.matmul(k_sin, v)  # [..., KDim, VDim]
         k_cos_v = torch.matmul(k_cos, v)
 
-        values = torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v)
+        values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v)) / self.temperature
 
         return values
 
@@ -171,7 +173,7 @@ class EfficientAttention(nn.Module):
         else:
             self.o_proj = nn.Identity()
         self.seq_length = patch_shape[0] * patch_shape[1] + 1
-        self.linear_attention = LinearAttention(self.seq_length)
+        self.linear_attention = LinearAttention(self.seq_length, temperature=self.k_dim ** 0.5)
         self.dropout = nn.Dropout(dropout)
         self.sampler = TokenSampler(
             total_number=self.seq_length,

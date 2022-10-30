@@ -2,7 +2,8 @@ import torch
 from torch import nn
 from .attention import EfficientAttention, MultiHeadAttention
 from .feed_forward import EnhancedFeedForward, PositionwiseFeedForward
-from .layers import ThinConvModule
+from .stem import ThinConvModule, PatchifyStem, ConvolutionalStem
+from .stem import Alternative1Stem, Alternative2Stem, Alternative3Stem, Alternative4Stem
 
 
 class EncoderLayer(nn.Module):
@@ -32,16 +33,27 @@ class EncoderLayer(nn.Module):
 
 class ConvolutionalEfficientTransformer(nn.Module):
     activation_class_map = {
+        "relu": nn.ReLU,
         'gelu': nn.GELU,
         'identity': nn.Identity,
     }
 
+    stem_class_map = {
+        "thin_conv": ThinConvModule,
+        "conv": ConvolutionalStem,
+        "patchify": PatchifyStem,
+        "alter1": Alternative1Stem,
+        "alter2": Alternative2Stem,
+        "alter3": Alternative3Stem,
+        "alter4": Alternative4Stem,
+    }
+
     def __init__(self, img_height=224, img_width=224, img_channel=3, num_classes=1000, softmax=False,
                  embed_dim=128, hidden_dim=384, num_layers=12, num_heads=8, activation='gelu',
-                 dropout=0.1, prune_rate=0.7, **kwargs):
+                 dropout=0.1, prune_rate=0.7, stem="conv", **kwargs):
         super(ConvolutionalEfficientTransformer, self).__init__()
         self.embed_dim = embed_dim
-        self.thin_conv = ThinConvModule(img_channel, embed_dim)
+        self.thin_conv = self.stem_class_map[stem](img_channel, embed_dim)
 
         example_input = torch.randn(1, img_channel, img_height, img_width)
         example_embed = self.thin_conv(example_input)

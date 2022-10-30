@@ -25,7 +25,7 @@ class LitCEFormer(pl.LightningModule):
             embed_dim: int = 128, hidden_dim: int = 384,
             num_layers: int = 12, num_heads=8,
             activation='gelu', softmax=True,
-            dropout=0.1, prune_rate=0.7,
+            dropout=0.1, prune_rate=0.7, stem="conv",
             # optimizer parameters
             optimizer='adamw',
             lr: float = 0.0005,
@@ -40,11 +40,12 @@ class LitCEFormer(pl.LightningModule):
         self.save_hyperparameters()
         self.network = ConvolutionalEfficientTransformer(
             img_height, img_width, img_channel, nun_classes, softmax, embed_dim, hidden_dim,
-            num_layers, num_heads, activation, dropout, prune_rate
+            num_layers, num_heads, activation, dropout, prune_rate, stem
         )
         self.loss = nn.CrossEntropyLoss()
         self.train_acc = torchmetrics.Accuracy(top_k=1)
         self.valid_acc = torchmetrics.Accuracy(top_k=1)
+        self.example_input_array = torch.randn(1, 3, img_width, img_height)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.network(images)

@@ -6,6 +6,7 @@ __author__ = "Xue-Yang Chen"
 
 class EnhancedFeedForward(nn.Module):
     activation_class_map = {
+        "relu": nn.ReLU,
         'gelu': nn.GELU,
         'identity': nn.Identity,
     }
