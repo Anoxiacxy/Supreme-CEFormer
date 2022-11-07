@@ -9,3 +9,4 @@ matplotlib
 gym
 wandb
 sklearn
+rich

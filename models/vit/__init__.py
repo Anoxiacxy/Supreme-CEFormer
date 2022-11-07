@@ -1,6 +1,8 @@
 import torch
-from torch import nn
+from torch import nn, optim
 import pytorch_lightning as pl
+import torch.functional as F
+from torchvision.models import VisionTransformer
 
 def img_to_patch(x, patch_size, flatten_channels=True):
     """
@@ -119,7 +121,6 @@ class LitViT(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.model = VisionTransformer(**model_kwargs)
-        self.example_input_array = next(iter(train_loader))[0]
 
     def forward(self, x):
         return self.model(x)

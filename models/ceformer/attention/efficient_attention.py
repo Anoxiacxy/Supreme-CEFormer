@@ -1,8 +1,10 @@
 from typing import Optional
 
+import numpy as np
 import torch
 from torch import nn
 from torch.nn.init import constant_, xavier_uniform_
+from ..sampler import DistributionSampler, TopSampler, AdaptiveSampler, RandomSampler
 
 __author__ = "Xue-Yang Chen"
 
@@ -24,7 +26,8 @@ class CosEmbedG(nn.Module):
         self.vec = torch.cos(torch.pi / 2.0 / n * torch.arange(n))
 
     def forward(self, x):
-        self.vec = self.vec.type_as(x)
+        if self.vec.device != x.device:
+            self.vec = self.vec.type_as(x)
         return x * self.vec.unsqueeze(1)
 
 
@@ -35,67 +38,9 @@ class SinEmbedG(nn.Module):
         self.vec = torch.sin(torch.pi / 2.0 / n * torch.arange(n))
 
     def forward(self, x):
-        self.vec = self.vec.type_as(x)
+        if self.vec.device != x.device:
+            self.vec = self.vec.type_as(x)
         return x * self.vec.unsqueeze(1)
-
-
-class TopSample(nn.Module):
-    def __init__(self, m, r):
-        super(TopSample, self).__init__()
-        self.r = r
-        self.m = m
-
-    def forward(self, q, k):
-        """
-        :param q: [..., SeqLen, Dims]
-        :param k: [..., SeqLen, Dims]
-        :return:
-        """
-        a = torch.matmul(q[..., :1, :], k[..., 1:, :].transpose(-2, -1))[..., 0, :]
-        _, index = torch.sort(a)
-        index = torch.cat([torch.zeros_like(index[..., :1]), index + 1], dim=-1)
-        return index <= self.r
-
-
-class RandomSample(nn.Module):
-    def __init__(self, m, r):
-        super(RandomSample, self).__init__()
-        self.r = r
-        self.m = m
-
-    def forward(self, q, k):
-        """
-        :param q: [..., SeqLen, Dims]
-        :param k: [..., SeqLen, Dims]
-        :return:
-        """
-        pass
-
-
-class DistributionSample(nn.Module):
-    def __init__(self, m, r, replacement=False):
-        super(DistributionSample, self).__init__()
-        self.m = m
-        self.r = r
-        self.replacement = replacement
-
-    def forward(self, q, k):
-        """
-        :param num_heads:
-        :param q: [Batch * Head, SeqLen, Dims]
-        :param k: [Batch * Head, SeqLen, Dims]
-        :return: i: [Batch * Head, SeqLen]
-        """
-        a = torch.matmul(q[..., :1, :], k[..., 1:, :].transpose(-2, -1))
-        a = a / math.sqrt(q.size()[-1])
-        # print(a)
-        a = nn.functional.softmax(a, dim=-1)[..., 0, :]
-        with torch.no_grad():
-            index = torch.multinomial(a, num_samples=self.r, replacement=self.replacement)
-        index = torch.cat([torch.zeros_like(index[..., :1]).type_as(index).int(), index + 1], dim=-1)
-        logic = torch.zeros_like(q[..., 0]).type_as(index).bool()
-        logic.scatter_(dim=-1, index=index, src=torch.ones_like(index).bool())
-        return logic
 
 
 class LinearAttention(nn.Module):
@@ -104,81 +49,115 @@ class LinearAttention(nn.Module):
         self.non_neg_f = NonNegativeF()
         self.cos_emb_g = CosEmbedG(n)
         self.sin_emb_g = SinEmbedG(n)
+
         self.temperature = temperature
 
-    def forward(self, q, k, v, index=None):
+    def forward(self, q, k, v, token_mask: Optional[torch.Tensor] = None):
         """
-        :param q: [..., SeqLen, KDim]
-        :param k: [..., SeqLen, KDim]
-        :param v: [..., SeqLen, VDim]
-        :param index: [..., SeqLen] bool
-        :return: [..., NewSeqLen,
+        :param q: [Batch, Head, SeqLen, KDim]
+        :param k: [Batch, Head, SeqLen, KDim]
+        :param v: [Batch, Head, SeqLen, VDim]
+        :param token_mask: [Batch, SeqLen] bool
+        :return: values [Batch, Head, SeqLen, VDim]
         """
-        k_cos = self.cos_emb_g(self.non_neg_f(k)).transpose(-1, -2)
+        batch_size, num_head, seq_length, k_dim = q.size()
+
+        k_cos = self.cos_emb_g(self.non_neg_f(k)).transpose(-1, -2)  # [Batch, Head, KDim, SeqLen]
         k_sin = self.sin_emb_g(self.non_neg_f(k)).transpose(-1, -2)
-        q_cos = self.cos_emb_g(self.non_neg_f(q))
+
+        q_cos = self.cos_emb_g(self.non_neg_f(q))  # [Batch, Head, SeqLen, KDim]
         q_sin = self.sin_emb_g(self.non_neg_f(q))
 
-        if index is not None:
-            q_cos = q_cos[index].reshape(q.shape[0], -1, q.shape[-1])
-            q_sin = q_sin[index].reshape(q.shape[0], -1, q.shape[-1])
-
-        k_sin_v = torch.matmul(k_sin, v)  # [..., KDim, VDim]
+        k_sin_v = torch.matmul(k_sin, v)  # [Batch, Head, KDim, VDim]
         k_cos_v = torch.matmul(k_cos, v)
 
-        values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v)) / self.temperature
+        if token_mask is not None:
+            # token_count = torch.sum(token_mask, dim=-1)  # [Batch]
+            # q_cos = q_cos.transpose(1, 2)
+            # q_sin = q_sin.transpose(1, 2)
+            # [batch seq dim, Head, KDim)
+            # q_cos = q_cos[token_mask]
+            # q_sin = q_sin[token_mask]
+
+            # values = torch.cat([
+            #     torch.einsum("shk, hkv->shv", q_cos[i][token_mask[i]], k_cos_v[i]) +
+            #     torch.einsum("shk, hkv->shv", q_sin[i][token_mask[i]], k_sin_v[i])
+            #     for i in range(batch_size)
+            # ])
+            # # values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
+            # values = values / self.temperature
+            #
+            # zeros = torch.zeros_like(v).transpose(1, 2)
+            # # print(zeros.shape, token_mask.shape, values.shape)
+            # zeros[token_mask] = values
+            # values = zeros.transpose(1, 2)
+            expand_token_mask = token_mask.view(batch_size, 1, seq_length, 1).expand_as(q)
+            q_cos *= expand_token_mask
+            q_sin *= expand_token_mask
+
+            values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
+            values = values / self.temperature
+
+        else:
+            values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
+            values = values / self.temperature
 
         return values
 
 
-class TokenSampler(nn.Module):
-    """
+class EfficientAttention(nn.Module):
 
-    """
-    sample_strategy_map = {
-        'top_sample': TopSample,
-        'distribution_sample': DistributionSample,
-        'random_sample': RandomSample,
+    sampler_strategy_map = {
+        'top': TopSampler,
+        'random': RandomSampler,
+        'distribution': DistributionSampler,
+        'adaptive': AdaptiveSampler,
     }
 
-    def __init__(self, strategy, total_number, sample_number=384):
-        super(TokenSampler, self).__init__()
-        self.sample_strategy = self.sample_strategy_map[strategy](total_number, sample_number)
-
-    def forward(self, q, k, *args):
-        return self.sample_strategy(q, k, *args)
-
-
-class EfficientAttention(nn.Module):
-    """
-    """
-
-    def __init__(self, embed_dim, num_heads, patch_shape, k_head_dim=None, v_head_dim=None,
-                 dropout=0.1, sample_strategy='distribution_sample', prune_rate=0.7, **kwargs) -> None:
+    def __init__(
+            self,
+            embed_dim,
+            num_heads,
+            patch_shape,
+            k_head_dim=None,
+            v_head_dim=None,
+            qkv_bias=False,
+            attn_dropout=0.1,
+            proj_dropout=0.1,
+            drop_tokens=False,
+            sampler_strategy='adaptive',
+            prune_rate=1,
+            **kwargs,
+    ) -> None:
         super(EfficientAttention, self).__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.dropout = dropout
+        self.qkv_bias = qkv_bias
 
         if k_head_dim is None or v_head_dim is None:
             assert self.embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
         self.k_dim = k_head_dim or self.embed_dim // num_heads
         self.v_dim = v_head_dim or self.embed_dim // num_heads
 
-        self.q_proj = nn.Linear(embed_dim, num_heads * self.k_dim)
-        self.k_proj = nn.Linear(embed_dim, num_heads * self.k_dim)
-        self.v_proj = nn.Linear(embed_dim, num_heads * self.v_dim)
-        if self.v_dim * num_heads != embed_dim:
-            self.o_proj = nn.Linear(num_heads * self.v_dim, embed_dim)
-        else:
-            self.o_proj = nn.Identity()
-        self.seq_length = patch_shape[0] * patch_shape[1] + 1
+        self.q_proj = nn.Linear(embed_dim, num_heads * self.k_dim, bias=qkv_bias)
+        self.k_proj = nn.Linear(embed_dim, num_heads * self.k_dim, bias=qkv_bias)
+        self.v_proj = nn.Linear(embed_dim, num_heads * self.v_dim, bias=qkv_bias)
+        self.o_proj = nn.Linear(num_heads * self.v_dim, embed_dim)
+
+        self.seq_length = np.product(patch_shape) + 1
         self.linear_attention = LinearAttention(self.seq_length, temperature=self.k_dim ** 0.5)
-        self.dropout = nn.Dropout(dropout)
-        self.sampler = TokenSampler(
-            total_number=self.seq_length,
-            sample_number=int(self.seq_length * prune_rate),
-            strategy=sample_strategy)
+
+        self.attn_dropout = nn.Dropout(attn_dropout)
+        self.proj_dropout = nn.Dropout(proj_dropout)
+
+        if drop_tokens:
+            self.sampler = self.sampler_strategy_map[sampler_strategy](
+                temperature=self.k_dim ** 0.5,
+                num_tokens=self.seq_length,
+                num_sampled=int(self.seq_length * prune_rate),
+            )
+        else:
+            self.sampler = None
 
         self._reset_parameters()
 
@@ -186,39 +165,43 @@ class EfficientAttention(nn.Module):
         xavier_uniform_(self.q_proj.weight)
         xavier_uniform_(self.k_proj.weight)
         xavier_uniform_(self.v_proj.weight)
-        # xavier_uniform_(self.o_proj.weight)
-        constant_(self.q_proj.bias, 0.0)
-        constant_(self.k_proj.bias, 0.0)
-        constant_(self.v_proj.bias, 0.0)
-        # constant_(self.o_proj.bias, 0.0)
+        xavier_uniform_(self.o_proj.weight)
+        if self.qkv_bias:
+            constant_(self.q_proj.bias, 0.0)
+            constant_(self.k_proj.bias, 0.0)
+            constant_(self.v_proj.bias, 0.0)
+        constant_(self.o_proj.bias, 0.0)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+    def forward(
+        self,
+        q: torch.FloatTensor,
+        k: torch.FloatTensor,
+        v: torch.FloatTensor,
+        token_mask: Optional[torch.BoolTensor]
+    ) -> (torch.FloatTensor, torch.FloatTensor, torch.BoolTensor):
+
         batch_size, seq_length, embed_dim = q.size()
         # Separate Q, K, V from linear output [Batch, Head, SeqLen, Dims]
-        q = self.q_proj(q)\
-            .reshape(batch_size, seq_length, self.num_heads, self.k_dim)\
-            .permute(0, 2, 1, 3)\
-            .reshape(batch_size * self.num_heads, seq_length, self.k_dim)
-        k = self.k_proj(k)\
-            .reshape(batch_size, seq_length, self.num_heads, self.k_dim)\
-            .permute(0, 2, 1, 3)\
-            .reshape(batch_size * self.num_heads, seq_length, self.k_dim)
-        v = self.v_proj(v)\
-            .reshape(batch_size, seq_length, self.num_heads, self.v_dim)\
-            .permute(0, 2, 1, 3)\
-            .reshape(batch_size * self.num_heads, seq_length, self.v_dim)
+        q = self.q_proj(q) \
+            .view(batch_size, seq_length, self.num_heads, self.k_dim) \
+            .transpose(1, 2)
 
-        index = self.sampler(q, k)  # sampled token index [Batch * Head, SeqLen]
-        sampled_values = self.linear_attention(q, k, v, index)  # [Batch * Head, SeqLen, EmbDims]
+        k = self.k_proj(k) \
+            .view(batch_size, seq_length, self.num_heads, self.k_dim) \
+            .transpose(1, 2)
 
-        values = torch.zeros(batch_size * self.num_heads, self.seq_length, self.v_dim).type_as(sampled_values)
-        values[index] += sampled_values.reshape(index.sum(), self.v_dim)
+        v = self.v_proj(v) \
+            .view(batch_size, seq_length, self.num_heads, self.v_dim) \
+            .transpose(1, 2)
 
-        values = values\
-            .reshape(batch_size, self.num_heads, self.seq_length, self.v_dim)\
-            .permute(0, 2, 1, 3)\
-            .reshape(batch_size, self.seq_length, self.num_heads * self.v_dim)
+        if self.sampler is not None:
+            token_mask = self.sampler(q, k, v, token_mask)
+
+        values = self.linear_attention(q, k, v, token_mask)  # [*, EmbDims]
+        values = values.transpose(1, 2) \
+            .reshape(batch_size, -1, self.num_heads * self.v_dim)
 
         o = self.o_proj(values)
-        o = self.dropout(o)
-        return o, None
+        o = self.proj_dropout(o)
+
+        return o, None, token_mask

@@ -26,7 +26,12 @@ class EnhancedFeedForward(nn.Module):
         self.activation = self.activation_class_map[activation]()
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, seq: torch.Tensor):
+    def forward(
+        self,
+        seq: torch.FloatTensor,
+        token_mask: torch.BoolTensor,
+        **kwargs
+    ) -> torch.Tensor:
         img, class_token = self.seq2img(seq)
 
         img = self.conv_1x1_dot_1(img)
@@ -45,13 +50,13 @@ class EnhancedFeedForward(nn.Module):
     def seq2img(self, seq: torch.Tensor):
         class_token, seq = seq[..., :1, :], seq[..., 1:, :]
         # assert seq.shape[-2] == self.patch_shape[0] * self.patch_shape[1]
-        img = seq.reshape(-1, *self.patch_shape, self.embed_dim)
+        img = seq.view(-1, *self.patch_shape, self.embed_dim)
         img = img.permute(0, 3, 1, 2)
         return img, class_token
 
     def img2seq(self, img: torch.Tensor, class_token: torch.Tensor):
         img = img.permute(0, 2, 3, 1)
-        seq = img.reshape(-1, self.patch_shape[0] * self.patch_shape[1], self.embed_dim)
+        seq = img.view(-1, self.patch_shape[0] * self.patch_shape[1], self.embed_dim)
         seq = torch.cat([class_token, seq], dim=-2)
         return seq
 

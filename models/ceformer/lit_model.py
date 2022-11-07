@@ -1,6 +1,6 @@
 import math
 import random
-from typing import Optional
+from typing import Optional, Collection
 import torch
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from torch import nn, optim
@@ -24,8 +24,9 @@ class LitCEFormer(pl.LightningModule):
             nun_classes: int = 1000,
             embed_dim: int = 128, hidden_dim: int = 384,
             num_layers: int = 12, num_heads=8,
-            activation='gelu', softmax=True,
-            dropout=0.1, prune_rate=0.7, stem="conv",
+            softmax=True, dropout=0.1, prune_rate=0.7,
+            drop_token_layers: Collection = range(2, 12),
+            activation='gelu', stem="conv", attention="e-attention", feedforward="enhanced",
             # optimizer parameters
             optimizer='adamw',
             lr: float = 0.0005,
@@ -40,7 +41,8 @@ class LitCEFormer(pl.LightningModule):
         self.save_hyperparameters()
         self.network = ConvolutionalEfficientTransformer(
             img_height, img_width, img_channel, nun_classes, softmax, embed_dim, hidden_dim,
-            num_layers, num_heads, activation, dropout, prune_rate, stem
+            num_layers, num_heads, dropout, prune_rate, drop_token_layers,
+            activation, stem, attention, feedforward,
         )
         self.loss = nn.CrossEntropyLoss()
         self.train_acc = torchmetrics.Accuracy(top_k=1)
@@ -61,7 +63,7 @@ class LitCEFormer(pl.LightningModule):
         elif mode == 'valid':
             self.valid_acc(y_hat, y)
             self.log('valid_acc', self.valid_acc, on_step=True, on_epoch=False, prog_bar=True)
-        self.log(f'{mode}_loss', loss)
+        self.log(f'{mode}_loss', loss, prog_bar=True)
         return loss
 
     def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
@@ -89,3 +91,7 @@ class LitCEFormer(pl.LightningModule):
 
         lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warm_up_with_cosine_lr)
         return [optimizer], [lr_scheduler]
+        # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #     optimizer, mode='min', patience=5, factor=0.9, verbose=True)
+        # return {"optimizer": optimizer, "lr_scheduler": lr_scheduler, "monitor": "valid_loss"}
+

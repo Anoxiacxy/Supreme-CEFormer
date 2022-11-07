@@ -1,0 +1,1 @@
+from .cifar100_datamodule import CIFAR100DataModule
