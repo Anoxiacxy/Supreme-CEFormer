@@ -1,4 +1,7 @@
+import math
+
 import torch
+import torchmetrics
 from torch import nn, optim
 import pytorch_lightning as pl
 import torch.functional as F
@@ -51,7 +54,7 @@ class AttentionBlock(nn.Module):
         return x
 
 
-class VisionTransformer(nn.Module):
+class MyVisionTransformer(nn.Module):
     def __init__(
         self,
         embed_dim,
@@ -117,27 +120,79 @@ class VisionTransformer(nn.Module):
 
 
 class LitViT(pl.LightningModule):
-    def __init__(self, model_kwargs, lr):
+    optimizer_class_map = {
+        'adamw': optim.AdamW,
+        'sgd': optim.SGD
+    }
+
+    def __init__(
+            self,
+            img_height: int = 224, img_width: int = 224, img_channel: int = 3,
+            nun_classes: int = 1000,
+            embed_dim: int = 128,
+            hidden_dim: int = 384,
+            num_layers: int = 12,
+            num_heads: int = 8,
+            patch_size: int = 16,
+            dropout: float = 0.1,
+            # optimizer parameters
+            optimizer='adamw',
+            lr: float = 0.0005,
+            weight_decay: float = 0.05,
+            batch_size: int = 1024,
+            warmup_epochs: int = 5,
+            max_epochs: int = 300,
+    ):
         super().__init__()
         self.save_hyperparameters()
-        self.model = VisionTransformer(**model_kwargs)
+        assert img_width == img_height
+        self.network = VisionTransformer(
+            image_size=img_width,
+            patch_size=patch_size,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            hidden_dim=embed_dim,
+            mlp_dim=hidden_dim,
+            dropout=dropout,
+            num_classes=nun_classes,
+        )
+        self.loss = nn.CrossEntropyLoss()
+        self.train_acc = torchmetrics.Accuracy(top_k=1)
+        self.valid_acc = torchmetrics.Accuracy(top_k=1)
+        self.example_input_array = torch.randn(1, 3, img_width, img_height)
 
     def forward(self, x):
-        return self.model(x)
+        return self.network(x)
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr)
-        lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
+        optimizer = self.optimizer_class_map[self.hparams.optimizer](
+            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+
+        def warm_up_with_cosine_lr(epoch):
+            if epoch < self.hparams.warmup_epochs:
+                return (epoch + 1) / self.hparams.warmup_epochs
+            else:
+                return 0.5 * (math.cos((epoch - self.hparams.warmup_epochs) /
+                                       (self.hparams.max_epochs - self.hparams.warmup_epochs) * math.pi) + 1)
+
+        lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warm_up_with_cosine_lr)
         return [optimizer], [lr_scheduler]
+        # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #     optimizer, mode='min', patience=5, factor=0.9, verbose=True)
+        # return {"optimizer": optimizer, "lr_scheduler": lr_scheduler, "monitor": "valid_loss"}
 
     def _calculate_loss(self, batch, mode="train"):
-        imgs, labels = batch
-        preds = self.model(imgs)
-        loss = F.cross_entropy(preds, labels)
-        acc = (preds.argmax(dim=-1) == labels).float().mean()
+        x, y = batch
+        y_hat = self.forward(x)
+        loss = self.loss(y_hat, y)
 
-        self.log("%s_loss" % mode, loss)
-        self.log("%s_acc" % mode, acc)
+        if mode == 'train':
+            self.train_acc(y_hat, y)
+            self.log('train_acc', self.train_acc, on_step=True, on_epoch=False, prog_bar=True)
+        elif mode == 'valid':
+            self.valid_acc(y_hat, y)
+            self.log('valid_acc', self.valid_acc, on_step=True, on_epoch=False, prog_bar=True)
+        self.log(f'{mode}_loss', loss, prog_bar=True)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -145,7 +200,9 @@ class LitViT(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        self._calculate_loss(batch, mode="val")
+        loss = self._calculate_loss(batch, mode="valid")
+        return loss
 
     def test_step(self, batch, batch_idx):
-        self._calculate_loss(batch, mode="test")
+        loss = self._calculate_loss(batch, mode="test")
+        return loss

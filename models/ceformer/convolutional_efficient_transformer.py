@@ -13,17 +13,17 @@ class EncoderLayer(nn.Module):
 
     attention_cls_map = {
         "e-attention": EfficientAttention,
-        "default": MultiHeadAttention,
+        "basic": MultiHeadAttention,
     }
 
     feedforward_cls_map = {
         "enhanced": EnhancedFeedForward,
-        "default": PositionwiseFeedForward,
+        "basic": PositionwiseFeedForward,
     }
 
     def __init__(self, embed_dim, hidden_dim, num_heads,
                  patch_shape, prune_rate, activation, dropout, attention, feedforward,
-                 drop_tokens: bool, dilation: tuple = (1,),
+                 drop_tokens: bool, dilation: tuple = (1, 2, 4), sampler_strategy: str = "adaptive",
                  **kwargs):
         super(EncoderLayer, self).__init__()
         self.attention = self.attention_cls_map[attention](
@@ -33,6 +33,7 @@ class EncoderLayer(nn.Module):
             attn_dropout=dropout,
             proj_dropout=dropout,
             drop_tokens=drop_tokens,
+            sampler_strategy=sampler_strategy,
             **kwargs)
         self.feedforward = self.feedforward_cls_map[feedforward](
             embed_dim, hidden_dim,
@@ -82,11 +83,14 @@ class ConvolutionalEfficientTransformer(nn.Module):
         "alter4": Alternative4Stem,
     }
 
-    def __init__(self, img_height=224, img_width=224, img_channel=3, num_classes=1000, softmax=False,
-                 embed_dim=128, hidden_dim=384, num_layers=12, num_heads=8,
-                 dropout=0.1, prune_rate=0.7, drop_token_layers: Container = range(2, 12),
-                 activation='gelu', stem="conv", attention="e-attention", feedforward="enhanced",
-                 **kwargs):
+    def __init__(
+            self, img_height=224, img_width=224, img_channel=3, num_classes=1000, softmax=False,
+            embed_dim=128, hidden_dim=384, num_layers=12, num_heads=8,
+            dropout=0.1, prune_rate=0.7, drop_token_layers: Container = range(2, 24), dilation=(1, 2, 4),
+            activation='gelu', stem="conv", attention="e-attention",
+            feedforward="enhanced", sampler_strategy="adaptive",
+            **kwargs
+    ):
         super(ConvolutionalEfficientTransformer, self).__init__()
         self.embed_dim = embed_dim
         self.thin_conv = self.stem_class_map[stem](img_channel, embed_dim)
@@ -97,7 +101,7 @@ class ConvolutionalEfficientTransformer(nn.Module):
         # print(f"patch shape = {self.patch_shape}")
 
         self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim))
-        self.token_mask = nn.Parameter(torch.ones(1, self.patch_shape[0] * self.patch_shape[1] + 1))
+        self.token_mask = torch.ones(1, self.patch_shape[0] * self.patch_shape[1] + 1).bool()
         self.pos_embed = nn.Parameter(torch.randn(1, 1 + self.patch_shape[0] * self.patch_shape[1], embed_dim))
         self.dropout = nn.Dropout(dropout)
 
@@ -105,6 +109,7 @@ class ConvolutionalEfficientTransformer(nn.Module):
             EncoderLayer(
                 embed_dim, hidden_dim, num_heads, self.patch_shape, prune_rate,
                 activation, dropout, attention, feedforward, _ in drop_token_layers,
+                dilation, sampler_strategy,
             ) for _ in range(num_layers)
         ])
 
@@ -115,7 +120,7 @@ class ConvolutionalEfficientTransformer(nn.Module):
         if softmax:
             self.mlp_head.append(nn.Softmax(dim=-1))
 
-    def forward(self, images: torch.Tensor):
+    def forward(self, images: torch.Tensor, log_token_count: bool = False):
         single_image = False
         if images.dim == 3:
             images = images.unsqueeze(0)
@@ -127,15 +132,22 @@ class ConvolutionalEfficientTransformer(nn.Module):
         seq += self.pos_embed
         seq = self.dropout(seq)
 
-        token_mask = self.token_mask.repeat(batch_size, 1)
-
+        token_mask = self.token_mask.to(images.device).repeat(batch_size, 1)
+        token_count = []
         for encoder_layer in self.encoder_layers:
             seq, token_mask = encoder_layer(seq, token_mask)
+            token_count.append(token_mask[0].sum().item())
 
-        cls = self.mlp_head(seq[:, 0])
+        class_token = seq[:, 0]
+        cls = self.mlp_head(class_token)
 
         if single_image:
-            return cls[0]
+            cls = cls[0]
+
+        if log_token_count:
+            out = cls, token_count
         else:
-            return cls
+            out = cls
+
+        return out
 

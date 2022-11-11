@@ -41,11 +41,17 @@ class DistributionSampler(nn.Module):
         :param v: [Batch, Head, SeqLen, Dims]
         :return:
         """
+        batch_size, num_head, seq_length, dims = v.size()
         attn = self.get_attention(q, k, token_mask)
+        # Batch, SeqLen
+        significance_score = torch.sum(attn[:, :, 0], dim=1)
+        significance_score = significance_score[:, 1:]  # [B x N-1]
+        significance_score = significance_score / significance_score.sum(dim=1, keepdim=True)  # [B x N-1]
 
         with torch.no_grad():
-            index = torch.multinomial(attn, num_samples=self.r, replacement=self.replacement)
+            index = torch.multinomial(significance_score, num_samples=self.num_sampled, replacement=self.replacement)
         index = torch.cat([torch.zeros_like(index[..., :1]).type_as(index).int(), index + 1], dim=-1)
-        logic = torch.zeros_like(q[..., 0]).type_as(index).bool()
-        logic.scatter_(dim=-1, index=index, src=torch.ones_like(index).bool())
-        return logic
+        token_mask = torch.zeros(batch_size, seq_length).type_as(index).bool()
+        token_mask.scatter_(dim=-1, index=index, src=torch.ones_like(index).bool())
+
+        return token_mask

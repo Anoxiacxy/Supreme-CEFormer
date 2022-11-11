@@ -75,7 +75,9 @@ class AdaptiveSampler(nn.Module):
             cdf - cdf.min(dim=1)[0].unsqueeze(dim=1)
         ) / ((cdf.max(dim=1)[0] - cdf.min(dim=1)[0]) / 1.0).unsqueeze(dim=1)
 
+        old_token_mask = token_mask
         token_mask = self.cdf_inverse_function_average_sampling(normalized_cdf, self.num_sampled)
         token_mask = torch.nn.functional.pad(token_mask, (1, 0), value=True)
+        token_mask = token_mask & old_token_mask
 
         return token_mask

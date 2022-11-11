@@ -15,7 +15,7 @@ class PositionwiseFeedForward(nn.Module):
         self.layer_norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
 
         residual = x
 

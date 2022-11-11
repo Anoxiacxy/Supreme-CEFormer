@@ -1,8 +1,6 @@
 import torch
 from torch import nn
 
-__author__ = "Xue-Yang Chen"
-
 
 class EnhancedFeedForward(nn.Module):
     activation_class_map = {
@@ -20,7 +18,7 @@ class EnhancedFeedForward(nn.Module):
         self.conv_1x1_dot_1 = nn.Conv2d(embed_dim, hidden_dim, (1, 1))
         self.conv_3x3_depth = nn.Conv2d(hidden_dim, hidden_dim, (3, 3), 1, 1, groups=hidden_dim)
         self.conv_3x3_dilation = nn.ModuleList([
-            nn.Conv2d(hidden_dim, hidden_dim, (3, 3), padding=d, dilation=d, groups=hidden_dim) for d in dilation])
+            nn.Conv2d(hidden_dim, hidden_dim, (3, 3), padding=d, dilation=d) for d in dilation])
         self.conv_1x1_dot_2 = nn.Conv2d(hidden_dim * len(dilation), embed_dim, (1, 1))
 
         self.activation = self.activation_class_map[activation]()

@@ -26,7 +26,12 @@ class LitCEFormer(pl.LightningModule):
             num_layers: int = 12, num_heads=8,
             softmax=True, dropout=0.1, prune_rate=0.7,
             drop_token_layers: Collection = range(2, 12),
-            activation='gelu', stem="conv", attention="e-attention", feedforward="enhanced",
+            dilation: tuple = (1,),
+            activation='gelu',
+            stem="conv",
+            attention="e-attention",
+            feedforward="enhanced",
+            sampler_strategy="adaptive",
             # optimizer parameters
             optimizer='adamw',
             lr: float = 0.0005,
@@ -34,6 +39,7 @@ class LitCEFormer(pl.LightningModule):
             batch_size: int = 1024,
             warmup_epochs: int = 5,
             max_epochs: int = 300,
+            log_token_count: bool = True,
             **kwargs):
         super().__init__(**kwargs)
         if img_dims is not None:
@@ -41,8 +47,8 @@ class LitCEFormer(pl.LightningModule):
         self.save_hyperparameters()
         self.network = ConvolutionalEfficientTransformer(
             img_height, img_width, img_channel, nun_classes, softmax, embed_dim, hidden_dim,
-            num_layers, num_heads, dropout, prune_rate, drop_token_layers,
-            activation, stem, attention, feedforward,
+            num_layers, num_heads, dropout, prune_rate, drop_token_layers, dilation,
+            activation, stem, attention, feedforward, sampler_strategy,
         )
         self.loss = nn.CrossEntropyLoss()
         self.train_acc = torchmetrics.Accuracy(top_k=1)
@@ -52,9 +58,18 @@ class LitCEFormer(pl.LightningModule):
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.network(images)
 
+    def forward_with_token_count(self, images: torch.Tensor) -> torch.Tensor:
+        return self.network(images, self.hparams.log_token_count)
+
     def _calculate_loss(self, batch, batch_idx, mode):
         x, y = batch
-        y_hat = self.forward(x)
+        if self.hparams.log_token_count:
+            y_hat, token_count = self.forward_with_token_count(x)
+            for i, c in enumerate(token_count):
+                self.log(f"{mode}_layer_{i}", float(c), on_step=True, on_epoch=False)
+        else:
+            y_hat = self.forward(x)
+
         loss = self.loss(y_hat, y)
 
         if mode == 'train':
@@ -94,4 +109,3 @@ class LitCEFormer(pl.LightningModule):
         # lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         #     optimizer, mode='min', patience=5, factor=0.9, verbose=True)
         # return {"optimizer": optimizer, "lr_scheduler": lr_scheduler, "monitor": "valid_loss"}
-

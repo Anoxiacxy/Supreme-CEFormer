@@ -6,8 +6,6 @@ from torch import nn
 from torch.nn.init import constant_, xavier_uniform_
 from ..sampler import DistributionSampler, TopSampler, AdaptiveSampler, RandomSampler
 
-__author__ = "Xue-Yang Chen"
-
 import math
 
 import torch
@@ -52,8 +50,10 @@ class LinearAttention(nn.Module):
 
         self.temperature = temperature
 
-    def forward(self, q, k, v, token_mask: Optional[torch.Tensor] = None):
+    def forward(self, q, k, v, token_mask: Optional[torch.Tensor] = None,
+                index_strategy="all"):
         """
+        :param index_strategy: 'all', 'pad', 'exact'
         :param q: [Batch, Head, SeqLen, KDim]
         :param k: [Batch, Head, SeqLen, KDim]
         :param v: [Batch, Head, SeqLen, VDim]
@@ -61,6 +61,7 @@ class LinearAttention(nn.Module):
         :return: values [Batch, Head, SeqLen, VDim]
         """
         batch_size, num_head, seq_length, k_dim = q.size()
+        __________, ________, __________, v_dim = v.size()
 
         k_cos = self.cos_emb_g(self.non_neg_f(k)).transpose(-1, -2)  # [Batch, Head, KDim, SeqLen]
         k_sin = self.sin_emb_g(self.non_neg_f(k)).transpose(-1, -2)
@@ -72,31 +73,50 @@ class LinearAttention(nn.Module):
         k_cos_v = torch.matmul(k_cos, v)
 
         if token_mask is not None:
-            # token_count = torch.sum(token_mask, dim=-1)  # [Batch]
-            # q_cos = q_cos.transpose(1, 2)
-            # q_sin = q_sin.transpose(1, 2)
-            # [batch seq dim, Head, KDim)
-            # q_cos = q_cos[token_mask]
-            # q_sin = q_sin[token_mask]
+            if index_strategy == "exact":
+                q_cos = q_cos.transpose(1, 2)
+                q_sin = q_sin.transpose(1, 2)
 
-            # values = torch.cat([
-            #     torch.einsum("shk, hkv->shv", q_cos[i][token_mask[i]], k_cos_v[i]) +
-            #     torch.einsum("shk, hkv->shv", q_sin[i][token_mask[i]], k_sin_v[i])
-            #     for i in range(batch_size)
-            # ])
-            # # values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
-            # values = values / self.temperature
-            #
-            # zeros = torch.zeros_like(v).transpose(1, 2)
-            # # print(zeros.shape, token_mask.shape, values.shape)
-            # zeros[token_mask] = values
-            # values = zeros.transpose(1, 2)
-            expand_token_mask = token_mask.view(batch_size, 1, seq_length, 1).expand_as(q)
-            q_cos *= expand_token_mask
-            q_sin *= expand_token_mask
+                values = torch.cat([
+                    torch.einsum("shk, hkv->shv", q_cos[i][token_mask[i]], k_cos_v[i]) +
+                    torch.einsum("shk, hkv->shv", q_sin[i][token_mask[i]], k_sin_v[i])
+                    for i in range(batch_size)
+                ])
+                values = values / self.temperature
 
-            values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
-            values = values / self.temperature
+                zeros = torch.zeros_like(v).transpose(1, 2)
+                zeros[token_mask] = values
+                values = zeros.transpose(1, 2)
+            elif index_strategy == "all":
+                expand_token_mask = token_mask.view(batch_size, 1, seq_length, 1).expand_as(q)
+                q_cos *= expand_token_mask
+                q_sin *= expand_token_mask
+
+                values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
+                values = values / self.temperature
+            elif index_strategy == "pad":
+                token_count = torch.sum(token_mask, dim=-1)
+                max_token_count = torch.max(token_count)[0]
+                min_token_count = torch.min(token_count)[0]
+
+                q_cos = q_cos.transpose(1, 2)
+                q_sin = q_sin.transpose(1, 2)
+
+                if max_token_count != min_token_count:
+                    token_mask_index = torch.nonzero(token_mask)  # [n, 2] like
+                    # TODO
+                else:
+                    q_cos = q_cos[token_mask].view(batch_size, -1, num_head, k_dim)
+                    q_sin = q_sin[token_mask].view(batch_size, -1, num_head, k_dim)  # [Batch * SeqLen, Head, Dim]
+                    values = (
+                        torch.einsum("bshk, hkv->bshv", q_cos, k_cos_v) +
+                        torch.einsum("bshk, hkv->bshv", q_sin, k_sin_v)
+                    ).view(-1, num_head, v_dim)
+                    values = values / self.temperature
+
+                    zeros = torch.zeros_like(v).transpose(1, 2)
+                    zeros[token_mask] = values
+                    values = zeros.transpose(1, 2)
 
         else:
             values = (torch.matmul(q_cos, k_cos_v) + torch.matmul(q_sin, k_sin_v))
@@ -173,11 +193,11 @@ class EfficientAttention(nn.Module):
         constant_(self.o_proj.bias, 0.0)
 
     def forward(
-        self,
-        q: torch.FloatTensor,
-        k: torch.FloatTensor,
-        v: torch.FloatTensor,
-        token_mask: Optional[torch.BoolTensor]
+            self,
+            q: torch.FloatTensor,
+            k: torch.FloatTensor,
+            v: torch.FloatTensor,
+            token_mask: Optional[torch.BoolTensor]
     ) -> (torch.FloatTensor, torch.FloatTensor, torch.BoolTensor):
 
         batch_size, seq_length, embed_dim = q.size()
