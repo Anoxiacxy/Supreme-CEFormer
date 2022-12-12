@@ -1,6 +1,6 @@
 # 高效的卷积变形金钢（Convolutional Efficient Transformer）
 
-这是关于[此论文](/paper.pdf) 的非官方代码复现，其中额外参考的资料有[轻量化卷积模块的替代](/2106.14881.pdf)，[自适应token采样](/2111.15667.pdf)。 
+这是关于[此论文](reference/paper.pdf) 的非官方代码复现，其中额外参考的资料有[轻量化卷积模块的替代](reference/2106.14881.pdf)，[自适应token采样](reference/2111.15667.pdf)。 
 
 ## 安装
 
