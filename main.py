@@ -1,11 +1,5 @@
 import argparse
-import os
-from typing import Optional
-
-import torch
 import pytorch_lightning as pl
-from torch.autograd import Variable
-from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
 from models import LitCEFormer, LitViT
